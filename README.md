@@ -1,0 +1,2 @@
+# superspreader_detection
+Investigating superspreader detection methods
