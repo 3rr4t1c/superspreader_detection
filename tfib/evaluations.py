@@ -181,6 +181,85 @@ def ranking_similarity(ranking_GT, ranking):
 
     return 1 - (distance / inverted_distance)
 
+## CUSTOM METRIC 2 UPDATED ##
+
+import math
+
+def ranking_normalizer(ascending_pair_list):
+
+    output_ranking = []
+    n = 0
+    for i, (k, v) in enumerate(ascending_pair_list):
+        
+        if output_ranking and v != ascending_pair_list[i-1][1]:
+            n += 1
+            
+        output_ranking.append((k, n))
+
+    return output_ranking
+
+
+def ranking_loss(true_ranking, test_ranking):
+
+    # Find the overlapping items
+    overlap_keys = set(true_ranking.keys()).intersection(set(test_ranking.keys()))
+
+    # Re-build the rankings
+    overlap_true = []
+    overlap_test = []
+    for k in overlap_keys:
+        overlap_true.append((k, true_ranking[k]))
+        overlap_test.append((k, test_ranking[k]))
+
+    # To sorted pair list
+    sort_fn = lambda x: x[1]
+    sorted_true = sorted(overlap_true, reverse=True, key=sort_fn)
+    sorted_test = sorted(overlap_test, reverse=True, key=sort_fn)
+
+    # To normalized rank
+    sorted_true_normalized = ranking_normalizer(sorted_true)
+    sorted_test_normalized = ranking_normalizer(sorted_test)
+
+    # Align with true (ground truth). If ground truth has tied items chains allow to not consider test ranks as errors
+    # sorted_test_aligned = [(p[0], sorted_true_normalized[i][1]) for i, p in enumerate(sorted_test)]
+
+    # Make a dict for fast access
+    sorted_true_normalized = dict(sorted_true_normalized)
+
+    loss = 0
+    # den = 0
+    # Evaluating the loss
+    for k, v in sorted_test_normalized:
+        
+        true_v = sorted_true_normalized[k]  
+        error = (true_v - v)**2
+        # weight = 1 / math.log(v + 2, 2)
+        loss += error #* weight
+        #den += weight
+
+    return loss #/ den
+
+
+def invert_ranking(ranking_dict):
+    
+    max_value = max(ranking_dict.values())
+    min_value = min(ranking_dict.values())
+    
+    result = {k: abs(v - max_value) + min_value for k, v in ranking_dict.items()}
+    
+    return result
+
+
+def ranking_loss_normalized(true_ranking, test_ranking):
+
+    loss = ranking_loss(true_ranking, test_ranking)
+    inverted_true_ranking = invert_ranking(true_ranking)
+    worse_loss = ranking_loss(true_ranking, inverted_true_ranking)
+    
+    return loss / worse_loss 
+
+## END CUSTOM METRIC 2 ##
+
 
 # Utility function. Convert a date time column to the float format.
 def datetime_to_float(time_df, datetime_column, time_unit="second"):

@@ -38,13 +38,15 @@ class TFIBEngine:
     def __init__(self,
                  reshare_key,   # Function, applied to a data[i] object return the content id
                  author_key,    # Function, applied to a data[i] object return the author id
-                 original_post_key,  # Function, applied to a data[i] object return the root content id
-                 original_author_key,
+                 original_post_key,  # Function, applied to a data[i] object return the original content id
+                 original_author_key,   # Function, applied to a data[i] object return the original author id
                  timestamp_key,     # Function, applied to a data[i] object return the timestamp
-                 flag_key,    # Function, applied to a data[i] object return the flag value (e.g. misinformation)
-                 credibility_threshold, 
+                 flag_key,    # Function, applied to a data[i] object return the flag value (e.g. misinformation).
+                 credibility_threshold, # Set a threshold for score. Below that threshold contents are flagged with 1.
                  delta=timedelta(days=5),   # timedelta object, the time frame size applied to data tweets
                  alpha=0.125,    # float, weight the importance of the past respect of the present in main time fit
+                 phi=0.2,       # float, weight the importance of deviation from estimated value
+                 mu=1.0,       # float weight the estimated value
                  enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?)
                  ) -> None:
 
@@ -61,7 +63,8 @@ class TFIBEngine:
         # Time training hyperparams
         self.alpha = alpha
         self.delta = delta
-        # TODO: self.gamma # for the variance
+        self.phi = phi
+        self.mu = mu
 
         #  fast access to be removed: all contents are retweets
         # self.content_index = {}
@@ -112,11 +115,19 @@ class TFIBEngine:
 
 
     # Single aggregation for round trip time evaluation
-    def standard_rtt(self, estimated, sampled):
-        return (1 - self.alpha) * estimated + self.alpha * sampled
+    def standard_rtt(self, estimated, sampled, deviation=None):
+
+        updated_estimated = (1 - self.alpha) * estimated + self.alpha * sampled
+        # estimated - alpha * estimated + alpha * sampled
+        # estimated + (alpha * sampled - alpha * estimated)
+        # estimated + alpha * (sampled - estimated)
+        # It's equivalent to Jacobson/Karels algoritm when phi = 0.0 and mu = 1.0
+
+        return updated_estimated, 0
 
 
     # Jacobson/Karels algorithm for better rtt estimation
+    # Source > https://tcpcc.systemsapproach.org/algorithm.html
     def _jk_rtt(self, estimated, sampled, deviation):
 
         # Compute the difference between the current sampled RTT and the estimated RTT
@@ -130,6 +141,7 @@ class TFIBEngine:
 
         return updated_estimated, updated_deviation
 
+
     # Estimate multiple authors RTT over time (variance version)
     def _multi_rtt(self, author2estimated, author2sampled):
 
@@ -140,7 +152,7 @@ class TFIBEngine:
 
                 estimated_features = author2estimated[author]
                 estimated_variance = self.author2variance[author]
-                # new_estimated_features = {}
+
                 for fname, estimated_value in estimated_features.items():
                     estimated = estimated_value
                     sampled = sampled_features[fname]
@@ -154,29 +166,6 @@ class TFIBEngine:
                 author2estimated[author] = sampled_features
                 features_variance = {k: 0 for k in sampled_features.keys()}
                 self.author2variance[author] = features_variance
-
-
-
-    # # Estimate multiple authors RTT over time
-    # def _multi_rtt(self, author2estimated, author2sampled):
-
-    #     # Update the estimated values if there are new sampled ones.
-    #     for author, value in author2estimated.items():
-
-    #         try:
-    #             new = {k: self.standard_rtt(v, author2sampled[author][k]) for k, v in author2estimated[author].items()}
-    #         except KeyError:
-    #             # If the user have no activity in the next period, the sampled value is considered 0
-    #             new = {k: self.standard_rtt(v, 0.0) for k, v in author2estimated[author].items()}
-
-    #         author2estimated[author] = new
-
-    #     # Add new user if any. The initial estimated value will be the sampled one.
-    #     for author, value in author2sampled.items():
-    #         try:
-    #             author2estimated[author]
-    #         except KeyError:
-    #             author2estimated[author] = value
 
 
     # Initialize counters for reposts
@@ -233,7 +222,7 @@ class TFIBEngine:
                 # First time this author is encountered: initialize
                 # self.author2contents[original_author_ID] = {original_post_ID: root_content_track}
 
-            #root_content_track = self.author2contents[original_author_ID][original_post_ID]
+            # root_content_track = self.author2contents[original_author_ID][original_post_ID]
 
 
             # If it is not a self reshare
@@ -418,11 +407,11 @@ class TFIBEngine:
             yield time_frame
 
 
-    def luceri_rank(self):
+    # def luceri_rank(self):
 
-        for author, content2stats in self.author2contents.items():
-            for contentID, stats in content2stats.items():
-                single_post_rank = [repost[1] for repost in stats["reposts_cascade"]]
+    #     for author, content2stats in self.author2contents.items():
+    #         for contentID, stats in content2stats.items():
+    #             single_post_rank = [repost[1] for repost in stats["reposts_cascade"]]
 
 
     # Time-aware fitting procedure: Splits the training period in sub-periods and aggregate the partial features
@@ -452,8 +441,7 @@ class TFIBEngine:
         for author, features in self.author2features.items():
             for fname, estimated in features.items():
                 deviation = self.author2variance[author][fname]
-                self.author2features[author][fname] = estimated + 0.2 * deviation
-
+                self.author2features[author][fname] = self.mu * estimated + self.phi * deviation
 
         # Detect and set feature vector size
         self._auto_feature_size()
