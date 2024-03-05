@@ -43,10 +43,11 @@ class TFIBEngine:
                  timestamp_key,     # Function, applied to a data[i] object return the timestamp
                  flag_key,    # Function, applied to a data[i] object return the flag value (e.g. misinformation).
                  credibility_threshold, # Set a threshold for score. Below that threshold contents are flagged with 1.
+                 alpha=0.5,    # float, weight the importance of the past respect of the present in main time fit
+                 beta=0.5,       # float, weight the importance of deviation from estimated value
+                 gamma=4.0,       # float weight the estimated value
                  delta=timedelta(days=5),   # timedelta object, the time frame size applied to data tweets
-                 alpha=0.125,    # float, weight the importance of the past respect of the present in main time fit
-                 phi=0.2,       # float, weight the importance of deviation from estimated value
-                 mu=1.0,       # float weight the estimated value
+                 use_original_rtt=False,    # Wheter to use standard RTT estimation formula or Jacobson/Karels version
                  enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?)
                  ) -> None:
 
@@ -62,9 +63,12 @@ class TFIBEngine:
 
         # Time training hyperparams
         self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
         self.delta = delta
-        self.phi = phi
-        self.mu = mu
+
+        # Select the formula to use for rtt
+        self.use_original_rtt = use_original_rtt
 
         #  fast access to be removed: all contents are retweets
         # self.content_index = {}
@@ -75,8 +79,8 @@ class TFIBEngine:
         # Map each author to their behavior features (e.g. FIB)
         self.author2features = {}
 
-        # For TFIB estimation. Keep track of the variance.
-        self.author2variance = {}
+        # For TFIB estimation. Smoothed deviation of features.
+        self.author2deviation = {}
 
         # Weights to linearly combine features
         self.feature_weights = None
@@ -115,15 +119,11 @@ class TFIBEngine:
 
 
     # Single aggregation for round trip time evaluation
-    def standard_rtt(self, estimated, sampled, deviation=None):
+    def _original_rtt(self, estimated, sampled):
 
-        updated_estimated = (1 - self.alpha) * estimated + self.alpha * sampled
-        # estimated - alpha * estimated + alpha * sampled
-        # estimated + (alpha * sampled - alpha * estimated)
-        # estimated + alpha * (sampled - estimated)
-        # It's equivalent to Jacobson/Karels algoritm when phi = 0.0 and mu = 1.0
+        new_estimated = self.alpha * estimated + (1 - self.alpha) * sampled
 
-        return updated_estimated, 0
+        return new_estimated
 
 
     # Jacobson/Karels algorithm for better rtt estimation
@@ -134,12 +134,12 @@ class TFIBEngine:
         difference = sampled - estimated
 
         # Update the estimated RTT using Jacobson/Karels algorithm
-        updated_estimated = estimated + self.alpha * difference
+        new_estimated = estimated + self.alpha * difference
 
         # Update the deviation estimate using Jacobson/Karels algorithm
-        updated_deviation = deviation + self.alpha * (abs(difference) - deviation)
+        new_deviation = deviation + self.beta * (abs(difference) - deviation)
 
-        return updated_estimated, updated_deviation
+        return new_estimated, new_deviation
 
 
     # Estimate multiple authors RTT over time (variance version)
@@ -151,21 +151,28 @@ class TFIBEngine:
             try:    # Try to update estimated features
 
                 estimated_features = author2estimated[author]
-                estimated_variance = self.author2variance[author]
+                estimated_deviation = self.author2deviation[author]
 
-                for fname, estimated_value in estimated_features.items():
-                    estimated = estimated_value
+                for fname, estimated in estimated_features.items():
+
                     sampled = sampled_features[fname]
-                    variance = estimated_variance[fname]
-                    new_estimated, new_variance = self._jk_rtt(estimated, sampled, variance)
-                    self.author2variance[author][fname] = new_variance
+
+                    if self.use_original_rtt:
+                        new_estimated = self._original_rtt(estimated, sampled)
+                    else:
+                        deviation = estimated_deviation[fname]
+                        new_estimated, new_deviation = self._jk_rtt(estimated, sampled, deviation)
+                        self.author2deviation[author][fname] = new_deviation
+
                     author2estimated[author][fname] = new_estimated
 
-            except KeyError:    # If something went wrong: initialization needed
+            except KeyError:    # If author not found: initialization needed
 
                 author2estimated[author] = sampled_features
-                features_variance = {k: 0 for k in sampled_features.keys()}
-                self.author2variance[author] = features_variance
+
+                if not self.use_original_rtt:
+                    features_deviation = {k: 0 for k in sampled_features.keys()}
+                    self.author2deviation[author] = features_deviation
 
 
     # Initialize counters for reposts
@@ -437,11 +444,13 @@ class TFIBEngine:
         # Save features to model instance variable
         self.author2features = temp_author2features
 
-        # Finalize the JK algorithm
-        for author, features in self.author2features.items():
-            for fname, estimated in features.items():
-                deviation = self.author2variance[author][fname]
-                self.author2features[author][fname] = self.mu * estimated + self.phi * deviation
+        # Handle the different estimation methods
+        if not self.use_original_rtt:
+            # Finalize the JK algorithm
+            for author, features in self.author2features.items():
+                for fname, estimated in features.items():
+                    deviation = self.author2deviation[author][fname]
+                    features[fname] = estimated + self.gamma * deviation
 
         # Detect and set feature vector size
         self._auto_feature_size()

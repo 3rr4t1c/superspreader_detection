@@ -2,7 +2,7 @@ import pandas as pd
 import math
 
 
-# TODO: Build a retweet network from DataFrame (returns the edgelist as a DataFrame). 
+# Build a retweet network from DataFrame (returns the edgelist as a DataFrame). 
 def get_retweet_network(retweets_df: pd.DataFrame,
                         rt_UserID_col:str,
                         userID_col: str,
@@ -54,152 +54,98 @@ def get_optimal_ranking(edge_list):
     return ranking_df[["node", "outgoing_weight", "incoming_weight"]]
 
 
-# Dismantling procedure by given ranking.
-# Remove from network_df nodes according to ranking_df order and save the remaining misinformation.
-def network_dismantle(network_df: pd.DataFrame, ranking_df: pd.DataFrame) -> list:
 
-    # print("Dismantling...")
+# Network dismantling procedure
+def network_dismantle(network_df, ranking):
+    """
+    Network dismantling procedure.
+    
+    Arguments:
+        network_df (pandas.DataFrame): The network DataFrame as edgelist (source, target, weight)
+        ranking (dict): A ranking with the format k: v where k is the item ID and v is the score
 
-    full_misinformation = network_df.weight.sum()
+    Returns:
+        list: A list of pairs (k, v) where k is the removed node name 
+              and v is the remaining misinformation
+    """
 
+    # Convert the ranking format for fast computation
+    ranking_df = pd.DataFrame.from_dict(ranking, orient="index", columns=["score"])
+    ranking_df.sort_values(by="score")
+
+    # The total misinformation retweeted
+    total_misinformation = network_df.weight.sum()
+
+    # Hold the network to be dismantled
     dismantled_network_df = network_df.copy()
 
-    network_sources = set(network_df[['source', 'target']].values.ravel(order='K')) #set(network_df.source.unique())
+    # Track the remaining misinformation
+    misinformation_track = [("FULL", 1.0)]
 
-    track = [(None, 1.0)]
+    for i, (author, _) in enumerate(ranking_df.itertuples()):
 
-    for author, _ in ranking_df.itertuples():
+        # Removing a non present node result in appending the same value. Handle this.
+        if ((dismantled_network_df.source == author).any() |
+            (dismantled_network_df.target == author).any()):
 
-        if author in network_sources:
+            # Build a boolean mask for edges
+            remaining_edges_mask = ((
+                dismantled_network_df.source != author) &
+                (dismantled_network_df.target != author))
 
-            # The network without the current author as node.
-            # NOTE: removing a node mean that all edges involving that node should be removed.
-            author_mask = (dismantled_network_df.source != author) & (dismantled_network_df.target != author)
-            dismantled_network_df = dismantled_network_df[author_mask]
+            # Remove all edges involving the current author (node)
+            dismantled_network_df = dismantled_network_df[remaining_edges_mask]
 
             # The ratio of current remaining misinformation in the network
-            remaining_misinformation = dismantled_network_df.weight.sum() / full_misinformation
-            
-            track.append((author, remaining_misinformation))
+            remaining_misinformation = dismantled_network_df.weight.sum() / total_misinformation
 
-    # Adjust sequence to have same lenght
-    n_residual_sources = dismantled_network_df.source.nunique()
-    track += [track[-1] for _ in range(n_residual_sources)]
+            # Append data to the track list
+            misinformation_track.append((author, remaining_misinformation))
 
-    return track
+    return misinformation_track
 
 
-# nDCG is used in common Information Retrieval tasks for
-# evaluate a IR model query result taking in account the order of retrieved documents
-# and the relevance score.
-def discounted_cumulative_gain(relevance_scores):
-    return sum([rel / math.log(n+1, 2) for n, rel in enumerate(relevance_scores, start=1)])
+# nDCG Remake (now with ties handling!)
+def discounted_cumulative_gain(relevance_scores: list) -> float:
+    """
+    Compute the Discounted Cumulative Gain for a list of scores.
+    If the list of scores contain blocks of equal subsequential scores,
+    they're considered to have same rank position and get the same discount.
+
+    Arguments:
+        relevance_scores (list): a list of numbers representig the relevance scores
+
+    Returns:
+        float: the computed discounted cumulative gain
+    """
+
+    dcg = 0
+    i = 1
+    prev_score = None
+
+    for score in relevance_scores:
+
+        if not prev_score or score != prev_score:
+            i += 1
+
+        dcg += score / math.log(i, 2)
+
+        prev_score = score
+
+    return dcg
 
 
-def normalized_discounted_cumulative_gain(ranking: dict, optimal_ranking: dict) -> float:
+def nDCG_loss(true_ranking:dict, test_ranking:dict) -> float:
+    """
+    Normalized Discounted Cumulative Gain based Loss.
 
-    rels = []
+    Arguments:
+        true_ranking (dict): Pairs k: v where k is the item ID and v is the relevance score
+        test_ranking (dict): Pairs k: v where k is the item ID and v is the relevance score
 
-    # Assign ground truth relevance values to current ranking
-    for author in ranking.keys():
-
-        try:
-            rels.append(optimal_ranking[author])
-        except KeyError:
-            pass
-
-    dcg = discounted_cumulative_gain(rels)
-    idcg = discounted_cumulative_gain(sorted(rels, reverse=True))
-
-    #print()
-    #print('rels', rels)
-    #print('DCG', dcg)
-    #print('IDCG', idcg)
-    try:
-        result = dcg/idcg
-    except ZeroDivisionError:
-        result = 0
-
-    return result
-
-
-## CUSTOM SIMILARITY METRIC FOR RANKINGS ##
-
-# Auxiliary function. Convert a ranking with scores to a position rank.
-# Ties will be handled by assignig the same rank position. 
-def to_sequential_rank(ranking: dict) -> dict:
-
-    items = list(ranking.items())
-    seq_ranking = [(items[0][0], 0)]
-
-    for n, (k, v) in enumerate(items[1:], start=1):
-        
-        if v == items[n-1][1]:
-            item = (items[n][0], seq_ranking[n-1][1])
-        else:
-            item = (items[n][0], seq_ranking[n-1][1] + 1)
-            
-        seq_ranking.append(item)
-        
-          
-    return dict(seq_ranking)
-
-# Auxiliary function. Invert the order of keys while keeping the values order.
-# Basically generate the inverted ranking. {'a': 10, 'b': 7, 'c': 7} -> {'c': 10, 'b': 7, 'a': 7}
-def invert_ranking(ranking: dict) -> dict:
-
-    inverted_keys = list(ranking.keys())
-    inverted_keys.reverse()
-    values = ranking.values()
-
-    return dict(zip(inverted_keys, values))
-
-
-# Main function. Evaluate the error committed with the position in the ranking.
-# A ground truth should be provided to evaluate against.
-def ranking_similarity(ranking_GT, ranking):
-    
-    # Overlap
-    common_items = set(ranking_GT.keys()).intersection(set(ranking.keys()))
-
-    # Create overlapping ranking (drop items not in common)
-    sort_key = lambda x: x[1]
-    overlap_ranking_GT = dict(sorted([(k, ranking_GT[k]) for k in common_items], key=sort_key, reverse=True))
-    overlap_ranking = dict(sorted([(k, ranking[k]) for k in common_items], key=sort_key, reverse=True))
-
-    # convert to sequential rankings
-    overlap_ranking_GT = to_sequential_rank(overlap_ranking_GT)
-    overlap_ranking = to_sequential_rank(overlap_ranking)
-    inverted_overlap_ranking_GT = invert_ranking(overlap_ranking_GT)
-
-    # evaluate errors for values (v_rank - v_GT)
-    distance = 0
-    inverted_distance = 0
-    for k, v in overlap_ranking.items():
-        distance += (v - overlap_ranking_GT[k])**2 / math.log(v + 2, 2)
-        inverted_distance += (v - inverted_overlap_ranking_GT[k])**2 / math.log(v + 2, 2)
-
-    return 1 - (distance / inverted_distance)
-
-## CUSTOM METRIC 2 UPDATED ##
-
-import math
-
-def ranking_normalizer(ascending_pair_list):
-
-    output_ranking = []
-    n = 0
-    for i, (k, v) in enumerate(ascending_pair_list):
-        
-        if output_ranking and v != ascending_pair_list[i-1][1]:
-            n += 1
-            
-        output_ranking.append((k, n))
-
-    return output_ranking
-
-
-def ranking_loss(true_ranking, test_ranking):
+    Returns:
+        float: The nDCG loss. A number that is equal to 0 if true_ranking == test_ranking
+    """
 
     # Find the overlapping items
     overlap_keys = set(true_ranking.keys()).intersection(set(test_ranking.keys()))
@@ -211,77 +157,25 @@ def ranking_loss(true_ranking, test_ranking):
         overlap_true.append((k, true_ranking[k]))
         overlap_test.append((k, test_ranking[k]))
 
-    # To sorted pair list
-    sort_fn = lambda x: x[1]
-    sorted_true = sorted(overlap_true, reverse=True, key=sort_fn)
-    sorted_test = sorted(overlap_test, reverse=True, key=sort_fn)
+    # Quick access to score
+    value_fn = lambda x: x[1]
 
-    # To normalized rank
-    sorted_true_normalized = ranking_normalizer(sorted_true)
-    sorted_test_normalized = ranking_normalizer(sorted_test)
+    # Sort the normalized true pairlist by descending scores
+    sorted_true = sorted(overlap_true, key=value_fn, reverse=True)
+    sorted_test = sorted(overlap_test, key=value_fn, reverse=True)
 
-    # Align with true (ground truth). If ground truth has tied items chains allow to not consider test ranks as errors
-    # sorted_test_aligned = [(p[0], sorted_true_normalized[i][1]) for i, p in enumerate(sorted_test)]
+    # Quick access to the true scores
+    sorted_true_index = dict(sorted_true)
 
-    # Make a dict for fast access
-    sorted_true_normalized = dict(sorted_true_normalized)
+    # Re-build the test as a scramble of true scores
+    build_test = [(k, sorted_true_index[k]) for k, _ in sorted_test]
 
-    loss = 0
-    # den = 0
-    # Evaluating the loss
-    for k, v in sorted_test_normalized:
-        
-        true_v = sorted_true_normalized[k]  
-        error = (true_v - v)**2
-        # weight = 1 / math.log(v + 2, 2)
-        loss += error #* weight
-        #den += weight
+    # Evaluate the gains
+    dcg = discounted_cumulative_gain([value_fn(x) for x in build_test])
+    idcg = discounted_cumulative_gain([value_fn(x) for x in sorted_true])
 
-    return loss #/ den
+    return 1.0 - (dcg / idcg)
 
-
-def invert_ranking(ranking_dict):
-    
-    max_value = max(ranking_dict.values())
-    min_value = min(ranking_dict.values())
-    
-    result = {k: abs(v - max_value) + min_value for k, v in ranking_dict.items()}
-    
-    return result
-
-
-def ranking_loss_normalized(true_ranking, test_ranking):
-
-    loss = ranking_loss(true_ranking, test_ranking)
-    inverted_true_ranking = invert_ranking(true_ranking)
-    worse_loss = ranking_loss(true_ranking, inverted_true_ranking)
-    
-    return loss / worse_loss 
-
-## END CUSTOM METRIC 2 ##
-
-
-# Utility function. Convert a date time column to the float format.
-def datetime_to_float(time_df, datetime_column, time_unit="second"):
-
-    df = time_df.copy()
-
-    time_rateo = 1
-
-    if time_unit == "minute":
-        time_rateo = 60
-    elif time_unit == "hour":
-        time_rateo = 3600
-    elif time_unit == "day":
-        time_rateo = 24 * 3600
-    else:
-        raise ValueError
-
-    df["time_float"] = df[datetime_column] - df[datetime_column].min()
-    df["time_float"] = df["time_float"].dt.total_seconds()
-    df["time_float"] = df["time_float"] / time_rateo
-
-    return df
 
 
 # Example usage:
@@ -301,5 +195,5 @@ if __name__ == "__main__":
     print(rank)
     print(optimal)
 
-    print(normalized_discounted_cumulative_gain(rank, optimal))
-    print(normalized_discounted_cumulative_gain(optimal, optimal))
+    print(nDCG_loss(rank, optimal))
+    print(nDCG_loss(optimal, optimal))
