@@ -1,13 +1,16 @@
 
 # Python specific
-**/__pycache__       # Python bytecode cache
+**/__pycache__
 
 # Jupyter Notebooks
-**/.ipynb_checkpoints  # Jupyter Notebook checkpoints
+**/.ipynb_checkpoints
 
 # Folders
 **/offline
 
 # Files
 **/.DS_Store
-
+data/COVID19_2023_02_22_DATASET.csv
+data/newsguard_ratings.csv
+data/tweets_processed_merged_users_2023_02_22.csv
+data/training_results.pickle
