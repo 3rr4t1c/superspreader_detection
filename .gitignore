@@ -1,0 +1,13 @@
+
+# Python specific
+**/__pycache__       # Python bytecode cache
+
+# Jupyter Notebooks
+**/.ipynb_checkpoints  # Jupyter Notebook checkpoints
+
+# Folders
+**/offline
+
+# Files
+**/.DS_Store
+
