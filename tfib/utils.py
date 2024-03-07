@@ -36,62 +36,49 @@ def datetime_to_float(time_df, datetime_column, time_unit="second"):
     return df
 
 
-def plot_heatmap(matrix,
-                 row_axis_name,
-                 col_axis_name,
-                 colorbar_name,
-                 x_ticks=None,
-                 y_ticks=None,
-                 palette='magma',
-                 reverse_palette=False,
-                 annot=True,
-                 fmt=".4f",
-                 annot_size=8,
-                 figsize=(12, 8),
-                 aspect='equal',
-                 cbar_shrink=0.7):
-    
-    # Reverse the palette if specified
-    if reverse_palette:
-        palette = sns.color_palette(palette, as_cmap=True).reversed()
-    
-    # Create the heatmap
-    plt.figure(figsize=figsize)
-    sns.heatmap(matrix, cmap=palette, annot=annot, fmt=fmt, 
-                cbar_kws={'label': colorbar_name, 'shrink': cbar_shrink},
-                annot_kws={"size": annot_size})
+# Plot the hyperparameter cmap
+def plot_grid_search_heatmap(data,
+                             plot_size=20,
+                             palette="gist_earth",
+                             reverse_cmap=True,
+                             color_bar_name="Loss",
+                             color_bar_shrink=0.26,
+                             annot_size=None,
+                             linewidths=.5,
+                             linecolor="purple",
+                             plot_title="Grid Search"):
+    """
+    Plot the heatmap for hyperparameters grid search.
+    """
 
-    # Rotate y-axis ticks horizontally for better readability
+    # setting the dimensions of the plot
+    _, ax = plt.subplots(figsize=(plot_size, plot_size))
+
+    # setting the heatmap color map
+    cmap = sns.color_palette(palette, as_cmap=True)
+    if reverse_cmap:
+        cmap = cmap.reversed()
+
+    # seaborn heatmap
+    ax = sns.heatmap(
+        data,
+        ax=ax,
+        cmap=cmap,
+        robust=True,
+        annot=True,
+        square=True,
+        cbar_kws={'label': color_bar_name, 'shrink': color_bar_shrink},
+        annot_kws={"size": annot_size},
+        linewidths=linewidths,
+        linecolor=linecolor
+    )
+
+    # set y ticks horizontally
     plt.yticks(rotation=0)
 
-    # Set labels for the axes
-    plt.xlabel(col_axis_name)
-    plt.ylabel(row_axis_name, rotation=90)  # Rotate y-axis label by 90 degrees
-    
-    # Set actual values for x and y ticks if provided
-    if x_ticks is not None:
-        plt.xticks(ticks=np.arange(len(x_ticks)) + 0.5, labels=x_ticks)
-    if y_ticks is not None:
-        plt.yticks(ticks=np.arange(len(y_ticks)) + 0.5, labels=y_ticks)
-
-    # Set aspect ratio if specified
-    plt.gca().set_aspect(aspect, adjustable='box')
-
-    # Show the plot
-    plt.show()
-
-
-# Highlight the minimum
-# # Find indices of minimum value
-# min_row, min_col = np.unravel_index(np.argmin(matrix), matrix.shape)
-
-# # Draw square around cell with lowest value
-# cell_x = min_col
-# cell_y = min_row
-# cell_width = 1
-# cell_height = 1
-# rect = Rectangle((cell_x, cell_y), cell_width, cell_height, linewidth=2, edgecolor='red', facecolor='none')
-# plt.gca().add_patch(rect)
+    # set the plot title
+    if plot_title:
+        plt.title(plot_title)
 
 
 def plot_dismantling_graph(dismantle_df, line_colors, line_markers):
