@@ -1,18 +1,17 @@
-#from tqdm import tqdm
-#from statistics import mean
-#import statistics
 import numpy as np
 import math
-#import random as rnd
 from datetime import timedelta
-from copy import copy
 
 
-# Given a descending sorted list returns
-# the index corresponding to the h-index definition
-# if a key function is provided it will applied to each element
-# before comparisons.
 def h_index_bisect(rsl, key=lambda x: x):
+    """
+        Binary search for quick h-index.
+
+        Given a descending sorted list returns
+        the index corresponding to the h-index definition
+        if a key function is provided it will applied to each element
+        before comparisons.
+    """
 
     lo = 0
     hi = len(rsl)
@@ -80,7 +79,7 @@ class TFIBEngine:
         self.author2features = {}
 
         # For TFIB estimation. Smoothed deviation of features.
-        self.author2deviation = {}
+        self.author2deviations = {}
 
         # Weights to linearly combine features
         self.feature_weights = None
@@ -121,7 +120,7 @@ class TFIBEngine:
     # Single aggregation for round trip time evaluation
     def _original_rtt(self, estimated, sampled):
 
-        new_estimated = self.alpha * estimated + (1 - self.alpha) * sampled
+        new_estimated = self.alpha * estimated + (1.0 - self.alpha) * sampled
 
         return new_estimated
 
@@ -151,28 +150,32 @@ class TFIBEngine:
             try:    # Try to update estimated features
 
                 estimated_features = author2estimated[author]
-                estimated_deviation = self.author2deviation[author]
 
-                for fname, estimated in estimated_features.items():
+                if not self.use_original_rtt:
+                    estimated_deviations = self.author2deviations[author]
 
-                    sampled = sampled_features[fname]
+                for fname, estimated_value in estimated_features.items():
+
+                    sampled_value = sampled_features[fname]
 
                     if self.use_original_rtt:
-                        new_estimated = self._original_rtt(estimated, sampled)
+                        new_estimated = self._original_rtt(estimated_value, sampled_value)
                     else:
-                        deviation = estimated_deviation[fname]
-                        new_estimated, new_deviation = self._jk_rtt(estimated, sampled, deviation)
-                        self.author2deviation[author][fname] = new_deviation
+                        deviation = estimated_deviations[fname]
+                        new_estimated, new_deviation = self._jk_rtt(estimated_value, sampled_value, deviation)
+                        self.author2deviations[author][fname] = new_deviation
 
                     author2estimated[author][fname] = new_estimated
 
             except KeyError:    # If author not found: initialization needed
 
+                # initialize estimated to sampled
                 author2estimated[author] = sampled_features
 
+                # initialize all deviations to zero
                 if not self.use_original_rtt:
-                    features_deviation = {k: 0 for k in sampled_features.keys()}
-                    self.author2deviation[author] = features_deviation
+                    features_deviation = {k: 0.0 for k in sampled_features.keys()}
+                    self.author2deviations[author] = features_deviation
 
 
     # Initialize counters for reposts
@@ -449,7 +452,7 @@ class TFIBEngine:
             # Finalize the JK algorithm
             for author, features in self.author2features.items():
                 for fname, estimated in features.items():
-                    deviation = self.author2deviation[author][fname]
+                    deviation = self.author2deviations[author][fname]
                     features[fname] = estimated + self.gamma * deviation
 
         # Detect and set feature vector size
