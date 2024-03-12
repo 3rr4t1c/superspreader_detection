@@ -105,37 +105,80 @@ def network_dismantle(network_df, ranking):
     return misinformation_track
 
 
-# nDCG Remake (now with ties handling!)
-def discounted_cumulative_gain(relevance_scores: list) -> float:
+# # nDCG Remake (now with ties handling!)
+# def discounted_cumulative_gain(relevance_scores: list) -> float:
+#     """
+#     Compute the Discounted Cumulative Gain for a list of scores.
+#     If the list of scores contain blocks of equal subsequential scores,
+#     they're considered to have same rank position and get the same discount.
+
+#     Arguments:
+#         relevance_scores (list): a list of numbers representig the relevance scores
+
+#     Returns:
+#         float: the computed discounted cumulative gain
+#     """
+
+#     dcg = 0
+#     i = 1
+#     prev_score = None
+
+#     for score in relevance_scores:
+
+#         if not prev_score or score != prev_score:
+#             i += 1
+
+#         dcg += score / math.log(i, 2)
+
+#         prev_score = score
+
+#     return dcg
+
+def discounted_cumulative_gain(relevance_scores: list, k: int = None) -> float:
     """
-    Compute the Discounted Cumulative Gain for a list of scores.
-    If the list of scores contain blocks of equal subsequential scores,
-    they're considered to have same rank position and get the same discount.
+    Compute the Discounted Cumulative Gain (DCG) for a list of relevance scores.
+    
+    DCG measures the ranking quality of the retrieved documents in a search engine
+    or recommendation system. It considers both the relevance of the documents
+    and their positions in the ranked list.
+
+    If the list of scores contains blocks of equal subsequential scores,
+    they're considered to have the same rank position and get the same discount.
 
     Arguments:
-        relevance_scores (list): a list of numbers representig the relevance scores
+        relevance_scores (list): A list of numbers representing the relevance scores.
+        k (int): The cutoff for considering only the top k scores. If None, consider all scores.
 
     Returns:
-        float: the computed discounted cumulative gain
+        float: The computed DCG.
     """
 
-    dcg = 0
-    i = 1
-    prev_score = None
+    # If k is not None, consider only the top k scores
+    if k is not None:
+        relevance_scores = relevance_scores[:k]
 
+    dcg = 0  # Initialize discounted cumulative gain
+    i = 1    # Initialize rank position
+    prev_score = None  # Initialize previous score
+
+    # Calculate DCG
     for score in relevance_scores:
 
+        # If the current score is different from the previous score,
+        # increment the rank position (ties handling).
         if not prev_score or score != prev_score:
             i += 1
 
+        # Calculate discounted cumulative gain using the formula
         dcg += score / math.log(i, 2)
 
+        # Update the previous score
         prev_score = score
 
     return dcg
 
 
-def nDCG_loss(true_ranking:dict, test_ranking:dict) -> float:
+def nDCG_loss(true_ranking:dict, test_ranking:dict, k:int = 10) -> float:
     """
     Normalized Discounted Cumulative Gain based Loss.
 
@@ -153,9 +196,9 @@ def nDCG_loss(true_ranking:dict, test_ranking:dict) -> float:
     # Re-build the rankings
     overlap_true = []
     overlap_test = []
-    for k in overlap_keys:
-        overlap_true.append((k, true_ranking[k]))
-        overlap_test.append((k, test_ranking[k]))
+    for id in overlap_keys:
+        overlap_true.append((id, true_ranking[id]))
+        overlap_test.append((id, test_ranking[id]))
 
     # Quick access to score
     value_fn = lambda x: x[1]
@@ -168,11 +211,11 @@ def nDCG_loss(true_ranking:dict, test_ranking:dict) -> float:
     sorted_true_index = dict(sorted_true)
 
     # Re-build the test as a scramble of true scores
-    build_test = [(k, sorted_true_index[k]) for k, _ in sorted_test]
+    build_test = [(id, sorted_true_index[id]) for id, _ in sorted_test]
 
     # Evaluate the gains
-    dcg = discounted_cumulative_gain([value_fn(x) for x in build_test])
-    idcg = discounted_cumulative_gain([value_fn(x) for x in sorted_true])
+    dcg = discounted_cumulative_gain([value_fn(x) for x in build_test], k=k)
+    idcg = discounted_cumulative_gain([value_fn(x) for x in sorted_true], k=k)
 
     return 1.0 - (dcg / idcg)
 
