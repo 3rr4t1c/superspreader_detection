@@ -31,23 +31,72 @@ def h_index_bisect(rsl, key=lambda x: x):
     return lo
 
 
+def time_slots_generator(data, key_fn, delta=1.0, allow_empty_slots=True):
+        """
+        Generate time slots based on a delta value.
+
+        Args:
+            data (iterable): Input data, should be sorted in ascending order based on key_fn.
+            key_fn (function): A function to extract the timestamp from each element in data.
+            delta (float, optional): Time interval for each time slot. Defaults to 1.0.
+            allow_empty_slots (bool, optional): Whether to generate empty time slots. Defaults to True.
+
+        Yields:
+            list: Time slots.
+        """
+
+        # Initialize variables
+        time_slot = []  # Current time slot
+        clock = delta    # Clock indicating the end of current time slot
+
+        # Iterate over the data
+        for x in data:
+            # Extract timestamp from the current element
+            time_stamp = key_fn(x)
+
+            # Check if the current element belongs to the current time slot
+            if time_stamp <= clock:
+                time_slot.append(x)  # Add the element to the current time slot
+            else:
+                # If the current element exceeds the current time slot, yield the current time slot
+                yield time_slot
+                time_slot = [x]  # Start a new time slot with the current element
+
+                # Compute the number of empty time slots to be generated
+                time_stamp_slot = time_stamp // delta  # Calculate the slot index of the current element
+                current_slot = clock / delta           # Calculate the slot index of the current clock
+                empty_slots = int(time_stamp_slot - current_slot)  # Compute the number of empty slots
+
+                # Generate empty time slots if allowed
+                if allow_empty_slots:
+                    for _ in range(empty_slots):
+                        yield []  # Yield an empty time slot
+
+                # Update the clock to the end of the new time slot
+                clock += delta * (1 + empty_slots)
+
+        # Yield the final time slot if it's not empty
+        if time_slot:
+            yield time_slot
+
+
 
 class TFIBEngine:
 
     def __init__(self,
-                 reshare_key,   # Function, applied to a data[i] object return the content id
-                 author_key,    # Function, applied to a data[i] object return the author id
-                 original_post_key,  # Function, applied to a data[i] object return the original content id
-                 original_author_key,   # Function, applied to a data[i] object return the original author id
-                 timestamp_key,     # Function, applied to a data[i] object return the timestamp
+                 reshare_key,   # Function, applied to a data[i] object return the content id.
+                 author_key,    # Function, applied to a data[i] object return the author id.
+                 original_post_key,  # Function, applied to a data[i] object return the original content id.
+                 original_author_key,   # Function, applied to a data[i] object return the original author id.
+                 timestamp_key,     # Function, applied to a data[i] object return the timestamp.
                  flag_key,    # Function, applied to a data[i] object return the flag value (e.g. misinformation).
                  credibility_threshold, # Set a threshold for score. Below that threshold contents are flagged with 1.
-                 alpha=0.5,    # float, weight the importance of the past respect of the present in main time fit
-                 beta=0.5,       # float, weight the importance of deviation from estimated value
-                 gamma=4.0,       # float weight the estimated value
-                 delta=timedelta(days=5),   # timedelta object, the time frame size applied to data tweets
-                 use_original_rtt=False,    # Wheter to use standard RTT estimation formula or Jacobson/Karels version
-                 enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?)
+                 alpha=0.5,    # float, weight the importance of the past respect of the present in main time fit.
+                 beta=0.5,       # float, weight the importance of deviation from estimated value.
+                 gamma=4.0,       # float weight the final estimated value when using the Jacobson/Karels version.
+                 delta=10.0,    # float indicating the interval in time units (days, hours, etc.) for each time slot.
+                 use_original_rtt=False,    # Wheter to use standard RTT estimation formula or Jacobson/Karels version.
+                 enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?) Update (12.03.2024) Seems not working anymore, no changes if enabled.
                  ) -> None:
 
         # Content features accessing functions
@@ -68,9 +117,6 @@ class TFIBEngine:
 
         # Select the formula to use for rtt
         self.use_original_rtt = use_original_rtt
-
-        #  fast access to be removed: all contents are retweets
-        # self.content_index = {}
 
         # Map each authors to their published contents tracks
         self.author2contents = {}
@@ -127,6 +173,7 @@ class TFIBEngine:
 
     # Jacobson/Karels algorithm for better rtt estimation
     # Source > https://tcpcc.systemsapproach.org/algorithm.html
+    # Source2 > http://isp.vsi.ru/library/Networking/TCPIPIllustrated/tcp_time.htm
     def _jk_rtt(self, estimated, sampled, deviation):
 
         # Compute the difference between the current sampled RTT and the estimated RTT
@@ -192,7 +239,7 @@ class TFIBEngine:
     def _fit_step_index_and_track(self, data):
 
         # PRE: Chronologically sorted data sequence required
-        for content in data: # TODO: all contents are reshares.
+        for content in data:
 
             # Values unpacking
             reshare_ID = self.reshare_key(content)
@@ -228,12 +275,6 @@ class TFIBEngine:
                     }
 
                 contents[original_post_ID] = root_content_track
-
-                # First time this author is encountered: initialize
-                # self.author2contents[original_author_ID] = {original_post_ID: root_content_track}
-
-            # root_content_track = self.author2contents[original_author_ID][original_post_ID]
-
 
             # If it is not a self reshare
             if original_author_ID != author_ID:
@@ -374,56 +415,6 @@ class TFIBEngine:
             self._auto_feature_size()
 
 
-    # Generate a time frame sequence. Each time frame is a list of events.
-    # A time frame can be empty. A frame delta define a time frame size.
-    def time_frames_generator(self, events, frame_delta, timestamp_key, frame_no_activity=True):
-
-        # No events mean one empty frame
-        if not events:
-
-            yield []
-
-        else:
-
-            initial_timestamp = timestamp_key(events[0])
-
-            time_frame = []
-
-            for e in events:
-
-                current_time = timestamp_key(e)
-
-                elapsed_time = current_time - initial_timestamp
-
-                elapsed_frames = elapsed_time / frame_delta
-
-                # If current event is out of this time frame
-                if elapsed_frames > 1:
-                    # Yield the current time frame
-                    yield time_frame
-                    # If requested, generate no activity time frames
-                    if frame_no_activity:
-                        for _ in range(math.floor(elapsed_frames) - 1):
-                            yield []
-                    # Set the new initial timestamp to the curent event time
-                    initial_timestamp = current_time
-                    # Init the new frame with the current event
-                    time_frame = [e]
-                else:
-                    # Keep filling the current time frame
-                    time_frame.append(e)
-
-            # Yield the last frame
-            yield time_frame
-
-
-    # def luceri_rank(self):
-
-    #     for author, content2stats in self.author2contents.items():
-    #         for contentID, stats in content2stats.items():
-    #             single_post_rank = [repost[1] for repost in stats["reposts_cascade"]]
-
-
     # Time-aware fitting procedure: Splits the training period in sub-periods and aggregate the partial features
     def time_fit(self, data):
 
@@ -433,7 +424,7 @@ class TFIBEngine:
         # Sort by time
         time_data = sorted(data, key=self.timestamp_key)
 
-        for data_chunk in self.time_frames_generator(time_data, self.delta, timestamp_key=self.timestamp_key):
+        for data_chunk in time_slots_generator(time_data, key_fn=self.timestamp_key, delta=self.delta):
 
             # Evaluate chunk
             self.fit(data_chunk, no_time_fit=False)
