@@ -178,7 +178,7 @@ def discounted_cumulative_gain(relevance_scores: list, k: int = None) -> float:
     return dcg
 
 
-def nDCG_loss(true_ranking:dict, test_ranking:dict, k:int = 10) -> float:
+def nDCG_loss(true_ranking:dict, test_ranking:dict, k:int = None) -> float:
     """
     Normalized Discounted Cumulative Gain based Loss.
 
