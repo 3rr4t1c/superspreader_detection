@@ -432,6 +432,18 @@ class TFIBEngine:
             # Merge result (Round Trip Time estimation formula)
             self._multi_rtt(temp_author2features, self.author2features)
 
+            # DEBUG #
+            # try:
+            #     print("1032615842 eFIB-i:", temp_author2features["1032615842"]["FIB-index"])
+            # except KeyError:
+            #     print("1032615842 not detected")
+
+            # try:
+            #     print("1032615842 sFIB-i:", self.author2features["1032615842"]["FIB-index"])
+            # except KeyError:
+            #     print("1032615842 not detected")
+            # DEBUG #
+
             # Reset the main features dict (used for every frame)
             self.author2features = dict()
 
