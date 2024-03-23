@@ -93,7 +93,7 @@ class TFIBEngine:
                  credibility_threshold, # Set a threshold for score. Below that threshold contents are flagged with 1.
                  alpha=0.5,    # float, weight the importance of the past respect of the present in main time fit.
                  beta=0.5,       # float, weight the importance of deviation from estimated value.
-                 gamma=4.0,       # float weight the final estimated value when using the Jacobson/Karels version.
+                 gamma=1.0,       # float weight the final estimated value when using the Jacobson/Karels version.
                  delta=10.0,    # float indicating the interval in time units (days, hours, etc.) for each time slot.
                  use_original_rtt=False,    # Wheter to use standard RTT estimation formula or Jacobson/Karels version.
                  enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?) Update (12.03.2024) Seems not working anymore, no changes if enabled.

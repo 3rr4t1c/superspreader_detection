@@ -143,3 +143,18 @@ def plot_dismantling_graph(dismantle_df, line_colors, line_markers):
     ax.set_xlabel("Rank position")
     
     plt.show()
+
+
+def generate_splits(interval, split):
+    """
+    Usage:
+    >>> generate_splits(213.0, 1.5)
+    >>> [213.0, 142.0, 94.0, 62.0, 41.0, 27.0, 18.0, 12.0, 8.0, 5.0, 3.0, 2.0, 1.0]
+    """
+
+    splits = [interval]
+    while interval > 1:
+        interval //= split
+        splits.append(interval)
+
+    return splits

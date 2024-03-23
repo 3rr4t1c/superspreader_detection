@@ -71,7 +71,7 @@ def network_dismantle(network_df, ranking):
 
     # Convert the ranking format for fast computation
     ranking_df = pd.DataFrame.from_dict(ranking, orient="index", columns=["score"])
-    ranking_df.sort_values(by="score")
+    ranking_df.sort_values(by="score", ascending=False)
 
     # The total misinformation retweeted
     total_misinformation = network_df.weight.sum()
@@ -82,25 +82,26 @@ def network_dismantle(network_df, ranking):
     # Track the remaining misinformation
     misinformation_track = [("FULL", 1.0)]
 
-    for i, (author, _) in enumerate(ranking_df.itertuples()):
+    for author, _ in ranking_df.itertuples():
 
-        # Removing a non present node result in appending the same value. Handle this.
-        if ((dismantled_network_df.source == author).any() |
-            (dismantled_network_df.target == author).any()):
+        # # Removing a non present node result in appending the same value. Handle this.
+        # if ((dismantled_network_df.source == author).any() |
+        #     (dismantled_network_df.target == author).any()):
 
-            # Build a boolean mask for edges
-            remaining_edges_mask = ((
-                dismantled_network_df.source != author) &
-                (dismantled_network_df.target != author))
+        # Build a boolean mask for edges
+        remaining_edges_mask = (
+            (dismantled_network_df.source != author) &
+            (dismantled_network_df.target != author)
+        )
 
-            # Remove all edges involving the current author (node)
-            dismantled_network_df = dismantled_network_df[remaining_edges_mask]
+        # Remove all edges involving the current author (node)
+        dismantled_network_df = dismantled_network_df[remaining_edges_mask]
 
-            # The ratio of current remaining misinformation in the network
-            remaining_misinformation = dismantled_network_df.weight.sum() / total_misinformation
+        # The ratio of current remaining misinformation in the network
+        remaining_misinformation = dismantled_network_df.weight.sum() / total_misinformation
 
-            # Append data to the track list
-            misinformation_track.append((author, remaining_misinformation))
+        # Append data to the track list
+        misinformation_track.append((author, remaining_misinformation))
 
     return misinformation_track
 
@@ -178,6 +179,27 @@ def discounted_cumulative_gain(relevance_scores: list, k: int = None) -> float:
     return dcg
 
 
+
+
+def add_missing_keys(dict1, dict2):
+
+    # Create new dictionaries to store modified versions
+    new_dict1 = dict1.copy()
+    new_dict2 = dict2.copy()
+
+    # Update new_dict1 with missing keys from dict2
+    for key in dict2.keys():
+        new_dict1.setdefault(key, 0)
+
+    # Update new_dict2 with missing keys from dict1
+    for key in dict1.keys():
+        new_dict2.setdefault(key, 0)
+
+    return new_dict1, new_dict2
+
+
+
+
 def nDCG_loss(true_ranking:dict, test_ranking:dict, k:int = None) -> float:
     """
     Normalized Discounted Cumulative Gain based Loss.
@@ -191,14 +213,19 @@ def nDCG_loss(true_ranking:dict, test_ranking:dict, k:int = None) -> float:
     """
 
     # Find the overlapping items
-    overlap_keys = set(true_ranking.keys()).intersection(set(test_ranking.keys()))
+    # overlap_keys = set(true_ranking.keys()).intersection(set(test_ranking.keys()))
 
-    # Re-build the rankings
-    overlap_true = []
-    overlap_test = []
-    for id in overlap_keys:
-        overlap_true.append((id, true_ranking[id]))
-        overlap_test.append((id, test_ranking[id]))
+    # # Re-build the rankings
+    # overlap_true = []
+    # overlap_test = []
+    # for id in overlap_keys:
+    #     overlap_true.append((id, true_ranking[id]))
+    #     overlap_test.append((id, test_ranking[id]))
+
+    # TODO: This is not overlap. Change the names..
+    overlap_true, overlap_test = add_missing_keys(true_ranking, test_ranking)
+    overlap_true = list(overlap_true.items())
+    overlap_test = list(overlap_test.items())
 
     # Quick access to score
     value_fn = lambda x: x[1]
