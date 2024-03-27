@@ -56,7 +56,7 @@ def get_optimal_ranking(edge_list):
 
 
 # Network dismantling procedure
-def network_dismantle(network_df, ranking):
+def network_dismantle(network_df: pd.DataFrame, ranking: dict, k: int = None):
     """
     Network dismantling procedure.
     
@@ -82,7 +82,10 @@ def network_dismantle(network_df, ranking):
     # Track the remaining misinformation
     misinformation_track = [("FULL", 1.0)]
 
-    for author, _ in ranking_df.itertuples():
+    for i, (author, _) in enumerate(ranking_df.itertuples()):
+
+        if k is not None and i == k:
+            break
 
         # # Removing a non present node result in appending the same value. Handle this.
         # if ((dismantled_network_df.source == author).any() |
@@ -106,34 +109,26 @@ def network_dismantle(network_df, ranking):
     return misinformation_track
 
 
-# # nDCG Remake (now with ties handling!)
-# def discounted_cumulative_gain(relevance_scores: list) -> float:
-#     """
-#     Compute the Discounted Cumulative Gain for a list of scores.
-#     If the list of scores contain blocks of equal subsequential scores,
-#     they're considered to have same rank position and get the same discount.
+def misinfo_loss(network_df: pd.DataFrame, ranking: dict, true_misinfo_track: list, k: int):
+    """
+    Compute the misinformation loss considering the amount of misinformation removed.
+    """
 
-#     Arguments:
-#         relevance_scores (list): a list of numbers representig the relevance scores
+    test_misinfo_track = network_dismantle(network_df, ranking, k)
+    
+    loss = 0
+    n = 0
 
-#     Returns:
-#         float: the computed discounted cumulative gain
-#     """
+    for test_misinfo in test_misinfo_track:
 
-#     dcg = 0
-#     i = 1
-#     prev_score = None
+        try:
+            loss += test_misinfo[1] - true_misinfo_track[n][1]
+            n += 1
+        except IndexError:
+            break   # true track ended before test track
 
-#     for score in relevance_scores:
+    return loss #/ n # Area is better than average (even if we ge the same results)
 
-#         if not prev_score or score != prev_score:
-#             i += 1
-
-#         dcg += score / math.log(i, 2)
-
-#         prev_score = score
-
-#     return dcg
 
 def discounted_cumulative_gain(relevance_scores: list, k: int = None) -> float:
     """
@@ -179,8 +174,6 @@ def discounted_cumulative_gain(relevance_scores: list, k: int = None) -> float:
     return dcg
 
 
-
-
 def add_missing_keys(dict1, dict2):
 
     # Create new dictionaries to store modified versions
@@ -196,8 +189,6 @@ def add_missing_keys(dict1, dict2):
         new_dict2.setdefault(key, 0)
 
     return new_dict1, new_dict2
-
-
 
 
 def nDCG_loss(true_ranking:dict, test_ranking:dict, k:int = None) -> float:
