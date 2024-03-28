@@ -1,7 +1,6 @@
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-
+from matplotlib.ticker import FuncFormatter
 
 def make_lists_same_length(data: dict):
     
@@ -81,7 +80,6 @@ def datetime_to_float(time_df, datetime_columns, time_unit="second"):
     return df
 
 
-# Plot the hyperparameter cmap
 def plot_grid_search_heatmap(data,
                              plot_size=20,
                              palette="gist_earth",
@@ -89,6 +87,10 @@ def plot_grid_search_heatmap(data,
                              color_bar_name="Loss",
                              color_bar_shrink=0.26,
                              annot_size=None,
+                             cbar_fontsize=None,
+                             cbar_tick_fontsize=None,
+                             cbar_label_pad=None,  # Add new parameter for color bar label padding
+                             cbar_name_fontsize=None,  # Add new parameter for color bar name font size
                              linewidths=.5,
                              linecolor="purple",
                              plot_title="Grid Search"):
@@ -104,22 +106,32 @@ def plot_grid_search_heatmap(data,
     if reverse_cmap:
         cmap = cmap.reversed()
 
-    # seaborn heatmap
+    # seaborn heatmap with custom formatting for annotations
     ax = sns.heatmap(
         data,
         ax=ax,
         cmap=cmap,
         robust=False,
         annot=True,
-        square=True,
-        cbar_kws={'label': color_bar_name, 'shrink': color_bar_shrink},
+        fmt=".4f",
+        cbar_kws={"label": color_bar_name, "shrink": color_bar_shrink},
         annot_kws={"size": annot_size},
         linewidths=linewidths,
         linecolor=linecolor
     )
 
-    # set y ticks horizontally
-    plt.yticks(rotation=0)
+    ax.set_aspect("equal")
+
+    # Customize color bar font size, label padding, and name font size
+    cbar = ax.collections[0].colorbar
+    if cbar_fontsize is not None:
+        cbar.ax.tick_params(labelsize=cbar_fontsize)
+    if cbar_tick_fontsize is not None:
+        cbar.ax.tick_params(axis='y', labelsize=cbar_tick_fontsize)
+    if cbar_label_pad is not None:
+        cbar.ax.yaxis.labelpad = cbar_label_pad
+    if cbar_name_fontsize is not None:
+        cbar.set_label(color_bar_name, fontsize=cbar_name_fontsize)
 
     # set the plot title
     if plot_title:

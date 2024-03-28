@@ -117,17 +117,18 @@ def misinfo_loss(network_df: pd.DataFrame, ranking: dict, true_misinfo_track: li
     test_misinfo_track = network_dismantle(network_df, ranking, k)
     
     loss = 0
-    n = 0
+    n = 1
 
-    for test_misinfo in test_misinfo_track:
+    for _, test_removed_misinfo in test_misinfo_track[1:]:
 
         try:
-            loss += test_misinfo[1] - true_misinfo_track[n][1]
+            true_removed_misinfo = true_misinfo_track[n][1]
+            loss += (test_removed_misinfo - true_removed_misinfo) / (1.0 - true_removed_misinfo)
             n += 1
         except IndexError:
             break   # true track ended before test track
 
-    return loss #/ n # Area is better than average (even if we ge the same results)
+    return loss / n # Area is better than average (even if we ge the same results)
 
 
 def discounted_cumulative_gain(relevance_scores: list, k: int = None) -> float:
