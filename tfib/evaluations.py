@@ -4,26 +4,28 @@ import math
 
 # Build a retweet network from DataFrame (returns the edgelist as a DataFrame). 
 def get_retweet_network(retweets_df: pd.DataFrame,
-                        rt_UserID_col:str,
-                        userID_col: str,
-                        rating_col:str,
+                        rt_user_ID_col: str,
+                        user_ID_col: str,
+                        rating_col: str,
                         low_cred_thr=None) -> pd.DataFrame:
-    
-    features = [rt_UserID_col, userID_col, rating_col]
+
+    features = [rt_user_ID_col, user_ID_col, rating_col]
+
     edge_list_df = retweets_df[features].copy()
-    
+
     if low_cred_thr:
         # Keep rows with credibility under threshold (credibility retweet network)
         edge_list_df = edge_list_df[edge_list_df[rating_col] <= low_cred_thr]
+    edge_list_df = edge_list_df[edge_list_df[rt_user_ID_col] != "AUTHOR"]
     
     # Group by ID pairs (retweeter and tweeter = edge) and aggregate by counting
-    edge_list_df = edge_list_df.groupby([rt_UserID_col, userID_col]).count()
+    edge_list_df = edge_list_df.groupby([rt_user_ID_col, user_ID_col]).count()
     # Sort values for nice prininting and reset the index
     edge_list_df.sort_values(by=rating_col, ascending=False, inplace=True)
     edge_list_df.reset_index(inplace=True)
     # Change the columns names
-    edge_list_df.rename(columns = {rt_UserID_col: "source",
-                                   userID_col: "target",
+    edge_list_df.rename(columns = {rt_user_ID_col: "source",
+                                   user_ID_col: "target",
                                    rating_col: "weight"}, inplace=True)
     
     return edge_list_df

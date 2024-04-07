@@ -31,7 +31,110 @@ def h_index_bisect(rsl, key=lambda x: x):
     return lo
 
 
-def time_slots_generator(data, key_fn, delta=1.0, allow_empty_slots=True):
+
+class TFIBEngine:
+
+    def __init__(self,
+                 reshare_key,   # Function, applied to a data[i] object return the content id.
+                 author_key,    # Function, applied to a data[i] object return the author id.
+                 original_post_key,  # Function, applied to a data[i] object return the original content id.
+                 original_author_key,   # Function, applied to a data[i] object return the original author id.
+                 timestamp_key,     # Function, applied to a data[i] object return the timestamp.
+                 label_key,    # Function, applied to a data[i] object return the flag value (e.g. misinformation).
+                 score_threshold, # Set a threshold for score. Below that threshold contents are flagged with 1.
+                 alpha=0.5,    # float, weight the importance of the past respect of the present in main time fit.
+                 beta=0.5,       # float, weight the importance of deviation from estimated value.
+                 gamma=1.0,       # float weight the final estimated value when using the Jacobson/Karels version.
+                 delta=10.0,    # float indicating the interval in time units (days, hours, etc.) for each time slot.
+                 use_original_rtt=False,    # Wheter to use standard RTT estimation formula or Jacobson/Karels version.
+                 # enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?) Update (12.03.2024) Seems not working anymore, no changes if enabled.
+                 ) -> None:
+
+        # Content features accessing functions
+        self.content_ID_key = reshare_key
+        self.author_ID_key = author_key
+        self.original_post_ID_key = original_post_key
+        self.original_author_ID_key = original_author_key
+        self.timestamp_key = timestamp_key
+        self.label_key = label_key
+
+        # Set the credibility threshold on the fly
+        self.score_threshold = score_threshold
+
+        # Time training perparams
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.delta = delta
+
+        # Select the formula to use for rtt
+        self.use_original_rtt = use_original_rtt
+
+        # Structures #
+
+        # Map each authors to their published contents tracks
+        self.author2tracks = {}
+
+        # Map each author to their behavior features (e.g. FIB)
+        self.author2features = {}
+
+        # For TFIB estimation. Smoothed deviation of features.
+        self.author2deviations = {}
+
+        # Weights to linearly combine features
+        self.feature_weights = None
+
+        # Store the ranking by a defined metric
+        self.output_rank = []
+
+        # Track co-authors (followers) as the first authors that share a post
+        # self.author2coauthors = {}
+
+        # EXPERIMENTAL: Enable repost count scaling.
+        # self.enable_repost_count_scaling = enable_repost_count_scaling
+
+
+    # Time-aware fitting
+    def time_fit(self, data):
+
+        # Init the time features accumulator
+        temp_author2features = {}
+
+        # Sort by time
+        time_sorted_data = sorted(data, key=self.timestamp_key)
+
+        for data_chunk in self.time_slots_generator(time_sorted_data, key_fn=self.timestamp_key):
+
+            # Evaluate chunk
+            self.fit(data_chunk, time_fit=True)
+
+            # Merge result (Round Trip Time estimation formula)
+            self._multi_rtt(temp_author2features, self.author2features)
+
+            # Reset the main features dict (used for every frame)
+            self.author2features = dict()
+
+            # try: # DEBUG (print the estimated index at each iteration)
+            #     print(temp_author2features["1683455144"]["H-index"])
+            # except KeyError:
+            #     pass
+
+        # Save features to model instance variable
+        self.author2features = temp_author2features
+
+        # Handle the different estimation methods
+        if not self.use_original_rtt:
+            # Finalize the JK algorithm
+            for author, features in self.author2features.items():
+                for fname, estimated in features.items():
+                    deviation = self.author2deviations[author][fname]
+                    features[fname] = estimated + self.gamma * deviation
+
+        # Detect and set feature vector size
+        self._auto_feature_size()
+
+
+    def time_slots_generator(self, data, key_fn, allow_empty_slots=True):
         """
         Generate time slots based on a delta value.
 
@@ -47,7 +150,7 @@ def time_slots_generator(data, key_fn, delta=1.0, allow_empty_slots=True):
 
         # Initialize variables
         time_slot = []  # Current time slot
-        clock = delta    # Clock indicating the end of current time slot
+        clock = self.delta    # Clock indicating the end of current time slot
 
         # Iterate over the data
         for x in data:
@@ -63,8 +166,8 @@ def time_slots_generator(data, key_fn, delta=1.0, allow_empty_slots=True):
                 time_slot = [x]  # Start a new time slot with the current element
 
                 # Compute the number of empty time slots to be generated
-                time_stamp_slot = time_stamp // delta  # Calculate the slot index of the current element
-                current_slot = clock / delta           # Calculate the slot index of the current clock
+                time_stamp_slot = time_stamp // self.delta  # Calculate the slot index of the current element
+                current_slot = clock / self.delta           # Calculate the slot index of the current clock
                 empty_slots = int(time_stamp_slot - current_slot)  # Compute the number of empty slots
 
                 # Generate empty time slots if allowed
@@ -73,119 +176,198 @@ def time_slots_generator(data, key_fn, delta=1.0, allow_empty_slots=True):
                         yield []  # Yield an empty time slot
 
                 # Update the clock to the end of the new time slot
-                clock += delta * (1 + empty_slots)
+                clock += self.delta * (1 + empty_slots)
 
         # Yield the final time slot if it's not empty
         if time_slot:
             yield time_slot
 
 
+    # Core training function
+    def fit(self, data, time_fit=False):
 
-class TFIBEngine:
+        content_stream = data
 
-    def __init__(self,
-                 reshare_key,   # Function, applied to a data[i] object return the content id.
-                 author_key,    # Function, applied to a data[i] object return the author id.
-                 original_post_key,  # Function, applied to a data[i] object return the original content id.
-                 original_author_key,   # Function, applied to a data[i] object return the original author id.
-                 timestamp_key,     # Function, applied to a data[i] object return the timestamp.
-                 flag_key,    # Function, applied to a data[i] object return the flag value (e.g. misinformation).
-                 credibility_threshold, # Set a threshold for score. Below that threshold contents are flagged with 1.
-                 alpha=0.5,    # float, weight the importance of the past respect of the present in main time fit.
-                 beta=0.5,       # float, weight the importance of deviation from estimated value.
-                 gamma=1.0,       # float weight the final estimated value when using the Jacobson/Karels version.
-                 delta=10.0,    # float indicating the interval in time units (days, hours, etc.) for each time slot.
-                 use_original_rtt=False,    # Wheter to use standard RTT estimation formula or Jacobson/Karels version.
-                 enable_repost_count_scaling = False    # Enable the repost count scale. TODO: Explain why works better (?) Update (12.03.2024) Seems not working anymore, no changes if enabled.
-                 ) -> None:
+        if not time_fit: # If not time-fitting ensure data is sorted by time
+            content_stream = sorted(content_stream, key=self.timestamp_key)
 
-        # Content features accessing functions
-        self.reshare_key = reshare_key
-        self.author_key = author_key
-        self.original_post_key = original_post_key
-        self.original_author_key = original_author_key
-        self.timestamp_key = timestamp_key
-        self.flag_key = flag_key
+        self._fit_step_counters_init()
 
-        self.credibility_threshold = credibility_threshold
+        self._fit_step_index_and_track(content_stream)
 
-        # Time training hyperparams
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
-        self.delta = delta
+        # self._fit_step_repost_count_scaling(enabled=self.enable_repost_count_scaling)   # To be investigated
 
-        # Select the formula to use for rtt
-        self.use_original_rtt = use_original_rtt
+        self._fit_step_feature_extraction()
 
-        # Map each authors to their published contents tracks
-        self.author2contents = {}
-
-        # Map each author to their behavior features (e.g. FIB)
-        self.author2features = {}
-
-        # For TFIB estimation. Smoothed deviation of features.
-        self.author2deviations = {}
-
-        # Weights to linearly combine features
-        self.feature_weights = None
-
-        # Store the ranking by a defined metric
-        self.output_rank = []
-
-        # Track co-authors (followers) as the first authors that share a post
-        self.author2coauthors = {}
-
-        # EXPERIMENTAL: Enable repost count scaling.
-        self.enable_repost_count_scaling = enable_repost_count_scaling
+        if not time_fit:
+            self._auto_feature_size()
 
 
-    # Getter for the learned rank
-    def get_rank(self, normalize=False):
+    # Initialize counters for reshares
+    def _fit_step_counters_init(self):
 
-        self.output_rank = dict()
-
-        for author, features in self.author2features.items():
-
-            fvector = np.array(list(features.values()), dtype=np.float32)
-            fvector /= np.linalg.norm(fvector) if normalize else 1.0
-
-            self.output_rank[author] = np.sum(fvector * self.feature_weights[:-1]) + self.feature_weights[-1]
-
-        self.output_rank = dict(sorted(self.output_rank.items(), key=lambda x: x[1], reverse=True))
-
-        return self.output_rank
+        for author in self.author2tracks.keys():
+            for track in self.author2tracks[author].values():
+                track["reposts_sampled_count"] = 0
+                track["self_reshares_count"] = 0
 
 
-    # Setter for weights
-    def set_weights(self, new_weights):
-        assert len(new_weights) == len(self.feature_weights), 'Invalid weights lenght!'
-        self.feature_weights = new_weights
+    # Build A2C (author to contents)
+    # Require data chronologically sorted
+    def _fit_step_index_and_track(self, content_stream):
+
+        for content in content_stream:
+
+            # Values unpacking
+            content_ID = self.content_ID_key(content)
+            author_ID = self.author_ID_key(content)
+            original_post_ID = self.original_post_ID_key(content)
+            original_author_ID = self.original_author_ID_key(content)
+            timestamp = self.timestamp_key(content)
+            binary_flag = 1 if self.label_key(content) <= self.score_threshold else 0
+
+            # # Handle contents that are original posts
+            # is_original_post = original_post_ID == "ORIGIN"
+            # if is_original_post:
+            #     original_post_ID = content_ID
+            #     original_author_ID = author_ID
+            # TODO: Remove this code. We work with reshares only.
+
+            try: # Get the contents published by this author
+                post2track = self.author2tracks[original_author_ID]
+            except KeyError: # First time see this author, init the contents index
+                post2track = {}
+                self.author2tracks[original_author_ID] = post2track
+
+            try: # Get the track for this content
+                root_content_track = post2track[original_post_ID]
+            except KeyError: # New content found, init the track
+                root_content_track = {
+                    #'reposts_total_count': 0,
+                    #'reposts_used_count': 0,
+                    "reposts_sampled_count": 0,
+                    "self_reshares_count": 0,
+                    # "timestamp": timestamp,
+                    "reshares_cascade": [],
+                    "binary_flag": binary_flag
+                }
+                post2track[original_post_ID] = root_content_track
+
+            # if it's a reshare
+            # if not is_original_post:
+
+            # if it's not a self-reshare
+            if original_author_ID != author_ID:
+
+                # Count as a reshare
+                root_content_track["reposts_sampled_count"] += 1
+
+                # Track the reshares cascade
+                root_content_track["reshares_cascade"].append((content_ID, author_ID, timestamp))
+
+                # # Assumption: the very first reposter could be a follower
+                # if len(root_content_track['reshares_cascade']) == 1:
+
+                #     try:
+                #         # Enroll this user as a coauthor of this root_user
+                #         self.author2coauthors[original_author_ID].add(author_ID)
+                #     except KeyError:
+                #         # Handle non yet initialized authors
+                #         self.author2coauthors[original_author_ID] = {author_ID}
+
+            else: # if it's a self-reshare count separately
+
+                # Handle self reshare separately
+                root_content_track["self_reshares_count"] += 1
+
+        # NOTE: At this point we have for each author all the original contents they posted
+        # and for each content they posted the count of reshares and self-reshares received
 
 
-    # Single aggregation for round trip time evaluation
-    def _original_rtt(self, estimated, sampled):
+    # STEP 3: Extract features from tracked user's posts
+    def _fit_step_feature_extraction(self):
 
-        new_estimated = self.alpha * estimated + (1.0 - self.alpha) * sampled
+        for author in self.author2tracks.keys():
 
-        return new_estimated
+            # The list of stats for each shared content by current author (content id not included)
+            author_content_tracks = self.author2tracks[author].values()
+
+            # Lower/Upper than threshold count
+            author_flagged_count = 0
+            author_non_flagged_count = 0
+
+            # Self reshares count
+            author_self_reshares = 0
+
+            # Influence (total reshares) count
+            author_flagged_influence = 0
+            author_non_flagged_influence = 0
+
+            # FIB and anti-FIB init
+            author_flagged_reshares_seq = []
+            author_non_flagged_reshares_seq = []
+
+            for track in author_content_tracks:
+
+                # Below threshold content
+                if track["binary_flag"] == 1:
+
+                    # Contents count
+                    author_flagged_count += 1
+
+                    # Influence
+                    author_flagged_influence += track["reposts_sampled_count"]
+
+                    # Lists with reshares count for each content
+                    author_flagged_reshares_seq.append(track["reposts_sampled_count"])
+
+                else:   # greater than score threshold
+
+                    author_non_flagged_count += 1
+                    author_non_flagged_influence += track["reposts_sampled_count"]
+                    author_non_flagged_reshares_seq.append(track["reposts_sampled_count"])
+
+                # self reshares total count
+                author_self_reshares += track["self_reshares_count"]
+
+            # H-index and anti H-index finalization
+            author_flagged_reshares_seq.sort(reverse=True)
+            author_non_flagged_reshares_seq.sort(reverse=True)
+            author_H_index = h_index_bisect(author_flagged_reshares_seq)
+            author_anti_H_index = h_index_bisect(author_non_flagged_reshares_seq)
+
+            # Normalized H-index by total number of flagged posts
+            all_posts_count = len(author_content_tracks)
+            author_nH_index = author_H_index / all_posts_count
+            author_anti_nH_index = author_anti_H_index / all_posts_count
+
+            # try:
+            #     author_coauthors = len(self.author2coauthors[author])
+            # except KeyError:
+            #     author_coauthors = 0
+
+            # Add the extracted features for current author
+            self.author2features[author] = {
+                "H-index": author_H_index,
+                "anti-H-index": author_anti_H_index,
+                "flagged-influence": author_flagged_influence,
+                "non-flagged-influence": author_non_flagged_influence,
+                "flagged-count": author_flagged_count,
+                "non-flagged-count": author_non_flagged_count,
+                "self-reshares": author_self_reshares,
+                "anti-normalized-H-index": author_anti_nH_index,
+                "normalized-H-index": author_nH_index
+            }
+
+        # Set the feature size globally
+        self.fsize = len(self.author2features[author]) + 1
 
 
-    # Jacobson/Karels algorithm for better rtt estimation
-    # Source > https://tcpcc.systemsapproach.org/algorithm.html
-    # Source2 > http://isp.vsi.ru/library/Networking/TCPIPIllustrated/tcp_time.htm
-    def _jk_rtt(self, estimated, sampled, deviation):
+    # Automatically set the weights vector accordingly to the feature length
+    def _auto_feature_size(self):
 
-        # Compute the difference between the current sampled RTT and the estimated RTT
-        difference = sampled - estimated
-
-        # Update the estimated RTT using Jacobson/Karels algorithm
-        new_estimated = estimated + self.alpha * difference
-
-        # Update the deviation estimate using Jacobson/Karels algorithm
-        new_deviation = deviation + self.beta * (abs(difference) - deviation)
-
-        return new_estimated, new_deviation
+        self.feature_weights = np.zeros(self.fsize, dtype=np.float32)
+        self.feature_weights[0] = 1.0   # Set H-index as default feature
 
 
     # Estimate multiple authors RTT over time (variance version)
@@ -225,241 +407,66 @@ class TFIBEngine:
                     self.author2deviations[author] = features_deviation
 
 
-    # Initialize counters for reposts
-    def _fit_step_counters_init(self):
+    # Single aggregation for round trip time evaluation
+    def _original_rtt(self, estimated, sampled):
 
-        for author in self.author2contents.keys():
-            for track in self.author2contents[author].values():
-                track['reposts_sampled_count'] = 0
-                track['self_reposts_count'] = 0
+        new_estimated = self.alpha * estimated + (1.0 - self.alpha) * sampled
 
+        return new_estimated
 
-    # Build A2C (author to contents) and CIDX (content index).
-    # Require data chronologically sorted
-    def _fit_step_index_and_track(self, data):
 
-        # PRE: Chronologically sorted data sequence required
-        for content in data:
+    # Jacobson/Karels algorithm for better rtt estimation
+    # Source > https://tcpcc.systemsapproach.org/algorithm.html
+    # Source2 > http://isp.vsi.ru/library/Networking/TCPIPIllustrated/tcp_time.htm
+    def _jk_rtt(self, estimated, sampled, deviation):
 
-            # Values unpacking
-            reshare_ID = self.reshare_key(content)
-            author_ID = self.author_key(content)
-            original_post_ID = self.original_post_key(content)
-            original_author_ID = self.original_author_key(content)
-            timestamp = self.timestamp_key(content)
-            flag = 1 if self.flag_key(content) <= self.credibility_threshold else 0
+        # Compute the difference between the current sampled RTT and the estimated RTT
+        difference = sampled - estimated
 
-            try:
+        # Update the estimated RTT using Jacobson/Karels algorithm
+        new_estimated = estimated + self.alpha * difference
 
-                contents = self.author2contents[original_author_ID]
+        # Update the deviation estimate using Jacobson/Karels algorithm
+        new_deviation = deviation + self.beta * (abs(difference) - deviation)
 
-            except KeyError:
+        return new_estimated, new_deviation
 
-                contents = dict()
-                self.author2contents[original_author_ID] = contents
 
-            try:
+    # Getter for the learned rank
+    def get_rank(self, normalize=False):
 
-                root_content_track = contents[original_post_ID]
+        self.output_rank = dict()
 
-            except KeyError:
+        for author, features in self.author2features.items():
 
-                root_content_track = {
-                    'reposts_total_count': 0,
-                    'reposts_sampled_count': 0,
-                    'reposts_used_count': 0,
-                    'reposts_cascade': [],
-                    'self_reposts_count': 0,
-                    'timestamp': timestamp,
-                    'flag': flag
-                    }
+            fvector = np.array(list(features.values()), dtype=np.float32)
+            fvector /= np.linalg.norm(fvector) if normalize else 1.0
 
-                contents[original_post_ID] = root_content_track
+            self.output_rank[author] = np.sum(fvector * self.feature_weights[:-1]) + self.feature_weights[-1]
 
-            # If it is not a self reshare
-            if original_author_ID != author_ID:
+        self.output_rank = dict(sorted(self.output_rank.items(), key=lambda x: x[1], reverse=True))
 
-                # Count as a reshare
-                root_content_track['reposts_sampled_count'] += 1
+        return self.output_rank
 
-                # Track the repost timeline
-                root_content_track['reposts_cascade'].append((reshare_ID, author_ID, timestamp))
 
-                # Assumption: the very first reposter could be a follower
-                if len(root_content_track['reposts_cascade']) == 1:
+    # Setter for weights
+    def set_weights(self, new_weights):
+        assert len(new_weights) == len(self.feature_weights), 'Invalid weights lenght!'
+        self.feature_weights = new_weights
 
-                    try:
-                        # Enroll this user as a coauthor of this root_user
-                        self.author2coauthors[original_author_ID].add(author_ID)
-                    except KeyError:
-                        # Handle non yet initialized authors
-                        self.author2coauthors[original_author_ID] = {author_ID}
 
-            else:
 
-                # Handle self reshare separately
-                root_content_track['self_reposts_count'] += 1
+    # # EXPERIMENTAL: enable to get better results. For further analysis.
+    # def _fit_step_repost_count_scaling(self, enabled=True):
 
+    #     for author in self.author2contents.keys():
+    #         for content in self.author2contents[author].values():
+    #             if enabled:
+    #                 content['reposts_used_count'] += content['reposts_total_count'] + content['reposts_sampled_count']
+    #                 content['reposts_total_count'] += content['reposts_sampled_count']
+    #             else:
+    #                 content['reposts_used_count'] = content['reposts_sampled_count']
 
-    # NOTE: At this point we have for each author all the original content they posted
-    # and for each content they posted the count of reshares and self-reshares received
-
-
-    # EXPERIMENTAL: enable to get better results. For further analysis.
-    def _fit_step_repost_count_scaling(self, enabled=True):
-
-        for author in self.author2contents.keys():
-            for content in self.author2contents[author].values():
-                if enabled:
-                    content['reposts_used_count'] += content['reposts_total_count'] + content['reposts_sampled_count']
-                    content['reposts_total_count'] += content['reposts_sampled_count']
-                else:
-                    content['reposts_used_count'] = content['reposts_sampled_count']
-
-
-    # STEP 3: Extract features from tracked user's posts
-    def _fit_step_feature_extraction(self):
-
-        for author in self.author2contents.keys():
-
-            # The list of stats for each shared content by current author (content id not included)
-            author_shared_contents = self.author2contents[author].values()
-
-            # Counts features init
-            author_flagged_count = 0
-            author_non_flagged_count = 0
-
-            # Self reshares init
-            author_self_resharing = 0
-
-            # Influence init
-            author_flagged_influence = 0
-            author_non_flagged_influence = 0
-
-            # FIB and anti-FIB init
-            author_flagged_reshare_counts = []
-            author_non_flagged_reshare_counts = []
-
-            for c in author_shared_contents:
-
-                # Contents count
-                author_flagged_count += c['flag']
-                author_non_flagged_count += (c['flag'] + 1) % 2
-
-                # Self reshares
-                author_self_resharing += c['self_reposts_count']
-
-                # Influence
-                author_flagged_influence += c['reposts_used_count'] if c['flag'] == 1 else 0
-                author_non_flagged_influence += c['reposts_used_count'] if c['flag'] == 0 else 0
-
-                # Lists with reshares count for each content
-                if c['flag'] == 1:
-                    author_flagged_reshare_counts.append(c['reposts_used_count'])
-                else:
-                    author_non_flagged_reshare_counts.append(c['reposts_used_count'])
-
-            # FIB and anti_FIB finalization
-            author_flagged_reshare_counts.sort(reverse=True)
-            author_non_flagged_reshare_counts.sort(reverse=True)
-            author_FIB = h_index_bisect(author_flagged_reshare_counts)
-            author_anti_FIB = h_index_bisect(author_non_flagged_reshare_counts)
-
-            try:
-                # Fall-index: Should capture a relation between the total number of received reshares and FIB
-                author_fall_index = author_FIB * sum(author_flagged_reshare_counts[:author_FIB-1])
-            except IndexError:
-                author_fall_index = 0
-
-            try:
-                author_coauthors = len(self.author2coauthors[author])
-            except KeyError:
-                author_coauthors = 0
-
-            self.author2features[author] = {'FIB-index': author_FIB,
-                                            'anti-FIB-index': author_anti_FIB,
-                                            'flagged-influence': author_flagged_influence,
-                                            'non-flagged-influence': author_non_flagged_influence,
-                                            'flagged-count': author_flagged_count,
-                                            'non-flagged-count': author_non_flagged_count,
-                                            'self-resharing': author_self_resharing,
-                                            'fall-index': author_fall_index,
-                                            'co-authors': author_coauthors}
-
-
-    # Automatically set the weights vector accordingly to the feature length
-    def _auto_feature_size(self):
-
-        fsize = len(list(self.author2features.values())[0]) + 1
-        self.feature_weights = np.zeros(fsize, dtype=np.float32)
-        self.feature_weights[0] = 1.0   # Set FIB as default feature
-
-
-    # Core training function
-    def fit(self, data, no_time_fit=True):
-
-        content_stream = data
-
-        if no_time_fit:
-            content_stream = sorted(content_stream, key=self.timestamp_key)
-
-        self._fit_step_counters_init()
-
-        self._fit_step_index_and_track(content_stream)
-
-        self._fit_step_repost_count_scaling(enabled=self.enable_repost_count_scaling)   # To be investigated
-
-        self._fit_step_feature_extraction()
-
-        if no_time_fit:
-            self._auto_feature_size()
-
-
-    # Time-aware fitting procedure: Splits the training period in sub-periods and aggregate the partial features
-    def time_fit(self, data):
-
-        # Init the time features accumulator
-        temp_author2features = dict()
-
-        # Sort by time
-        time_data = sorted(data, key=self.timestamp_key)
-
-        for data_chunk in time_slots_generator(time_data, key_fn=self.timestamp_key, delta=self.delta):
-
-            # Evaluate chunk
-            self.fit(data_chunk, no_time_fit=False)
-
-            # Merge result (Round Trip Time estimation formula)
-            self._multi_rtt(temp_author2features, self.author2features)
-
-            # DEBUG #
-            # try:
-            #     print("1032615842 eFIB-i:", temp_author2features["1032615842"]["FIB-index"])
-            # except KeyError:
-            #     print("1032615842 not detected")
-
-            # try:
-            #     print("1032615842 sFIB-i:", self.author2features["1032615842"]["FIB-index"])
-            # except KeyError:
-            #     print("1032615842 not detected")
-            # DEBUG #
-
-            # Reset the main features dict (used for every frame)
-            self.author2features = dict()
-
-        # Save features to model instance variable
-        self.author2features = temp_author2features
-
-        # Handle the different estimation methods
-        if not self.use_original_rtt:
-            # Finalize the JK algorithm
-            for author, features in self.author2features.items():
-                for fname, estimated in features.items():
-                    deviation = self.author2deviations[author][fname]
-                    features[fname] = estimated + self.gamma * deviation
-
-        # Detect and set feature vector size
-        self._auto_feature_size()
 
 
 
